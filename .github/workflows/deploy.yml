@@ -1,122 +1,177 @@
-name: deploy-to-ec2
+name: Deploy ItemManagement (Compose bundle -> EC2)
 
 on:
-  workflow_dispatch:
   push:
     branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+env:
+  APP_NAME: itemmanagement
+  APP_ROOT: /var/www/itemmanagement
+  PROJECT_NAME: itemmanagement          # docker compose -p name (keeps volumes stable)
+  API_HOST_PORT: "8082"
+  UI_HOST_PORT: "8088"
 
+jobs:
+  build:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 1) Write SSH key + basic diagnostics (key validity)
-      - name: Prepare SSH (diagnostics)
+      # Create a deploy bundle from your repo contents
+      - name: Create deploy bundle (deploy.tgz)
         shell: bash
         run: |
-          set -euxo pipefail
-          mkdir -p ~/.ssh
+          set -euo pipefail
+          rm -rf deploy
+          mkdir -p deploy/app
 
-          echo "Checking secrets presence..."
-          if [ -z "${{ secrets.EC2_HOST }}" ]; then
-            echo "ERROR: EC2_HOST secret is empty or missing"
-            exit 1
-          fi
-          if [ -z "${{ secrets.EC2_USER }}" ]; then
-            echo "ERROR: EC2_USER secret is empty or missing"
-            exit 1
-          fi
-          if [ -z "${{ secrets.EC2_SSH_KEY }}" ]; then
-            echo "ERROR: EC2_SSH_KEY secret is empty or missing"
-            exit 1
-          fi
+          # Copy only what the server needs
+          cp docker-compose.yml deploy/
+          cp -R ItemManagement.Api deploy/
+          cp -R itemmanagement-ui deploy/
+          cp -R DB deploy/ || true
 
-          echo "Writing SSH key..."
-          printf '%s' "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          echo "Bundle contents:"
+          find deploy -maxdepth 3 -type f -print | head -200
 
-          echo "Key file size:"
-          wc -c ~/.ssh/id_rsa
+          tar -czf deploy.tgz -C deploy .
+          ls -lah deploy.tgz
 
-          echo "Validating private key can produce a public key..."
-          ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub || (echo "ERROR: invalid private key content" && exit 1)
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-tgz
+          path: deploy.tgz
+          if-no-files-found: error
 
-          echo "Prepare SSH completed."
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
 
-      # 2) NEW: Print public key fingerprint derived from your GitHub secret (SAFE)
-      - name: SSH key fingerprint (safe)
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-tgz
+
+      - name: Setup SSH (safe + strict)
         shell: bash
-        run: |
-          set -e
-          echo "Local public key fingerprint derived from secret:"
-          ssh-keygen -lf ~/.ssh/id_rsa.pub
-
-      # 3) Confirm EC2_HOST formatting + confirm TCP/22 is reachable from GitHub runner
-      - name: Debug EC2_HOST + test port 22
-        shell: bash
-        run: |
-          set -e
-          echo "EC2_HOST length: ${#EC2_HOST}"
-          echo "EC2_HOST starts-with-ec2? $(echo "$EC2_HOST" | grep -q '^ec2-' && echo yes || echo no)"
-          echo "Testing TCP/22 reachability..."
-          timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" && echo "✅ Port 22 reachable" || (echo "❌ Port 22 NOT reachable" && exit 1)
         env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
-
-      # 4) Add host key to known_hosts (only after port 22 reachable)
-      - name: Add EC2 to known_hosts
-        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p ~/.ssh
-          ssh-keyscan -p 22 -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+          chmod 700 ~/.ssh
 
-      # 5) NEW: SSH auth debug (prints the real reason for "Permission denied (publickey)")
-      # NOTE: This prints connection/auth details, but NOT your private key.
-      - name: Test SSH login (debug)
+          if [ -z "${EC2_SSH_PRIVATE_KEY:-}" ]; then
+            echo "ERROR: EC2_SSH_PRIVATE_KEY secret is empty."
+            exit 1
+          fi
+
+          printf "%s" "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/id_key
+          tr -d '\r' < ~/.ssh/id_key > ~/.ssh/id_key.clean && mv ~/.ssh/id_key.clean ~/.ssh/id_key
+          chmod 600 ~/.ssh/id_key
+
+          # Quick reachability test
+          timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" >/dev/null 2>&1 || (echo "ERROR: Port 22 not reachable" && exit 1)
+
+          # Pin host key
+          ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          # Verify SSH auth works
+          ssh -i ~/.ssh/id_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "${{ secrets.EC2_USER }}@$EC2_HOST" "echo SSH_OK"
+
+      - name: Upload deploy.tgz to EC2
         shell: bash
         run: |
-          set -e
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes -vvv "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" "echo SSH_OK"
+          set -euo pipefail
+          scp -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
+            deploy.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/deploy.tgz"
 
-      - name: Upload app to EC2
+      - name: Deploy on EC2 (releases + shared env + compose up)
         shell: bash
         run: |
-          set -euxo pipefail
-          tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui DB
-          scp -i ~/.ssh/id_rsa app.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/app.tgz"
+          set -euo pipefail
+          ssh -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'SSH'
+            set -euo pipefail
 
-      - name: Deploy on EC2
+            APP_ROOT="${APP_ROOT:-/var/www/itemmanagement}"
+            PROJECT_NAME="${PROJECT_NAME:-itemmanagement}"
+            API_HOST_PORT="${API_HOST_PORT:-8082}"
+            UI_HOST_PORT="${UI_HOST_PORT:-8088}"
+
+            TS="$(date +%Y%m%d%H%M%S)"
+            RELEASE_DIR="$APP_ROOT/releases/$TS"
+            SHARED_DIR="$APP_ROOT/shared"
+
+            sudo mkdir -p "$APP_ROOT/releases" "$RELEASE_DIR" "$SHARED_DIR"
+
+            # Ensure docker + compose plugin exist
+            if ! sudo docker --version >/dev/null 2>&1; then
+              echo "Docker missing - installing..."
+              sudo apt-get update -y
+              sudo apt-get install -y docker.io
+              sudo systemctl enable docker
+              sudo systemctl start docker
+              sudo usermod -aG docker ubuntu || true
+            fi
+
+            if ! sudo docker compose version >/dev/null 2>&1; then
+              echo "docker compose plugin missing - installing..."
+              sudo apt-get update -y
+              sudo apt-get install -y docker-compose-plugin
+            fi
+
+            # Create shared .env once (DON'T overwrite on future deploys)
+            if [ ! -f "$SHARED_DIR/.env" ]; then
+              echo "Creating $SHARED_DIR/.env ..."
+              sudo bash -c "cat > '$SHARED_DIR/.env' <<'EOF'
+SA_PASSWORD=${{ secrets.SA_PASSWORD }}
+SQL_DB=${{ secrets.SQL_DB }}
+API_PORT=${API_HOST_PORT}
+WEB_PORT=${UI_HOST_PORT}
+EOF"
+              sudo chmod 600 "$SHARED_DIR/.env"
+            else
+              echo "Shared .env already exists. Keeping it."
+            fi
+
+            # Extract deploy bundle
+            sudo tar -xzf /tmp/deploy.tgz -C "$RELEASE_DIR"
+            sudo rm -f /tmp/deploy.tgz
+
+            # Link .env into release (compose loads .env in same folder)
+            sudo ln -sfn "$SHARED_DIR/.env" "$RELEASE_DIR/.env"
+
+            # Bring up stack
+            cd "$RELEASE_DIR"
+            sudo docker compose -p "$PROJECT_NAME" up -d --build
+            sudo docker compose -p "$PROJECT_NAME" ps
+
+            # Point "current" to latest release
+            sudo ln -sfn "$RELEASE_DIR" "$APP_ROOT/current"
+
+            # Health checks
+            echo "Checking API health..."
+            curl -fsS "http://localhost:${API_HOST_PORT}/api/health" >/dev/null
+
+            echo "Checking UI..."
+            curl -fsS "http://localhost:${UI_HOST_PORT}/" >/dev/null
+
+            echo "DEPLOY_OK: $RELEASE_DIR"
+SSH
+
+      - name: Show final URLs
         shell: bash
         run: |
-          set -euxo pipefail
-          ssh -i ~/.ssh/id_rsa "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
-            set -euxo pipefail
-
-            sudo apt-get update -y || true
-            sudo apt-get install -y curl git || true
-
-            mkdir -p ~/itemmanagement
-            tar -xzf ~/app.tgz -C ~/itemmanagement
-            rm -f ~/app.tgz
-            cd ~/itemmanagement
-
-            cat > .env <<EOT
-            SA_PASSWORD=${{ secrets.SA_PASSWORD }}
-            SQL_DB=${{ secrets.SQL_DB }}
-            API_PORT=8082
-            WEB_PORT=8088
-            EOT
-
-            sudo docker compose up -d --build
-            sudo docker compose ps
-
-            curl -fsS http://localhost:8082/api/health
-            curl -fsS http://localhost:8088/ >/dev/null
-          EOF
+          echo "UI:  http://${{ secrets.EC2_HOST }}:${{ env.UI_HOST_PORT }}"
+          echo "API: http://${{ secrets.EC2_HOST }}:${{ env.API_HOST_PORT }}/api/health"
