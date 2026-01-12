@@ -43,8 +43,8 @@ jobs:
           echo "Key file size:"
           wc -c ~/.ssh/id_rsa
 
-          echo "Testing key format..."
-          ssh-keygen -lf ~/.ssh/id_rsa || (echo "ERROR: private key format is invalid" && exit 1)
+          echo "Validating private key can produce a public key..."
+          ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub || (echo "ERROR: invalid private key content" && exit 1)
 
           echo "Running ssh-keyscan..."
           ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts || (echo "ERROR: ssh-keyscan failed (wrong IP or port 22 blocked)" && exit 1)
