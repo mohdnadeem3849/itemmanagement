@@ -1,3 +1,21 @@
+name: deploy-to-ec2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Prepare SSH (diagnostics)
         shell: bash
         run: |
@@ -25,10 +43,42 @@
           echo "Key file size:"
           wc -c ~/.ssh/id_rsa
 
-          echo "Testing key format (should say: 'RSA' or 'ED25519' or similar)..."
+          echo "Testing key format..."
           ssh-keygen -lf ~/.ssh/id_rsa || (echo "ERROR: private key format is invalid" && exit 1)
 
-          echo "Running ssh-keyscan to ${{ secrets.EC2_HOST }}..."
+          echo "Running ssh-keyscan..."
           ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts || (echo "ERROR: ssh-keyscan failed (wrong IP or port 22 blocked)" && exit 1)
 
           echo "Prepare SSH completed."
+
+      - name: Upload app to EC2
+        run: |
+          tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui DB
+          scp -i ~/.ssh/id_rsa app.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/app.tgz"
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
+            set -euxo pipefail
+
+            sudo apt-get update -y || true
+            sudo apt-get install -y curl git || true
+
+            mkdir -p ~/itemmanagement
+            tar -xzf ~/app.tgz -C ~/itemmanagement
+            rm -f ~/app.tgz
+            cd ~/itemmanagement
+
+            cat > .env <<EOT
+            SA_PASSWORD=${{ secrets.SA_PASSWORD }}
+            SQL_DB=${{ secrets.SQL_DB }}
+            API_PORT=8082
+            WEB_PORT=8088
+            EOT
+
+            sudo docker compose up -d --build
+            sudo docker compose ps
+
+            curl -fsS http://localhost:8082/api/health
+            curl -fsS http://localhost:8088/ >/dev/null
+          EOF
