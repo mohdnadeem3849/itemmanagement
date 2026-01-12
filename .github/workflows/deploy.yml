@@ -39,7 +39,7 @@ jobs:
           name: deploy-tgz
           path: .
 
-       - name: Setup SSH (robust + debug)
+      - name: Setup SSH (robust + debug)
         shell: bash
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -56,26 +56,18 @@ jobs:
             exit 1
           fi
 
-          # Write private key safely
           printf "%s" "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          # Add host key
           ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-          # ===== DEBUG (SAFE TO PRINT) =====
           echo "USER=$EC2_USER HOST=$EC2_HOST"
           echo "Runner SSH key fingerprint:"
           ssh-keygen -y -f ~/.ssh/id_rsa | ssh-keygen -lf -
-          echo "================================="
 
-          # Test SSH authentication
-          ssh -i ~/.ssh/id_rsa \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
+          ssh -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$EC2_USER@$EC2_HOST" "echo SSH_OK"
-
 
       - name: Create app.env (runner)
         shell: bash
@@ -132,15 +124,6 @@ jobs:
               sudo ln -sfn \"\$NEW_RELEASE\" \"\$APP_ROOT/current\"
 
               cd \"\$APP_ROOT/current\"
-
-              if [ ! -f \"\$COMPOSE_FILE\" ]; then
-                echo \"ERROR: \$COMPOSE_FILE not found in \$(pwd)\"
-                ls -la
-                exit 1
-              fi
-
-              sudo docker --version
-              sudo docker compose version
 
               sudo docker compose -f \"\$COMPOSE_FILE\" --env-file \"\$ENV_FILE\" up -d --build --remove-orphans
 
