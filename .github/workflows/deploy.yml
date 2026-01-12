@@ -33,9 +33,6 @@ jobs:
           cp -R itemmanagement-ui deploy/
           cp -R DB deploy/ || true
 
-          echo "Bundle contents:"
-          find deploy -maxdepth 3 -type f -print | head -200
-
           tar -czf deploy.tgz -C deploy .
           ls -lah deploy.tgz
 
@@ -75,14 +72,10 @@ jobs:
           tr -d '\r' < ~/.ssh/id_key > ~/.ssh/id_key.clean && mv ~/.ssh/id_key.clean ~/.ssh/id_key
           chmod 600 ~/.ssh/id_key
 
-          # Port 22 reachability test
           timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" >/dev/null 2>&1 || (echo "ERROR: Port 22 not reachable" && exit 1)
-
-          # Pin host key
           ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-          # Verify SSH auth
           ssh -i ~/.ssh/id_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "${{ secrets.EC2_USER }}@$EC2_HOST" "echo SSH_OK"
 
@@ -96,7 +89,6 @@ jobs:
       - name: Deploy on EC2 (releases + shared env + compose up)
         shell: bash
         env:
-          # pass secrets safely to the runner step (not inside heredoc)
           SA_PASSWORD: ${{ secrets.SA_PASSWORD }}
           SQL_DB: ${{ secrets.SQL_DB }}
           APP_ROOT: ${{ env.APP_ROOT }}
@@ -117,7 +109,6 @@ jobs:
 
               sudo mkdir -p "$APP_ROOT/releases" "$RELEASE_DIR" "$SHARED_DIR"
 
-              # Ensure docker + compose plugin exist
               if ! sudo docker --version >/dev/null 2>&1; then
                 sudo apt-get update -y
                 sudo apt-get install -y docker.io
@@ -131,33 +122,28 @@ jobs:
                 sudo apt-get install -y docker-compose-plugin
               fi
 
-              # Create shared .env once (don't overwrite on future deploys)
+              # Create shared .env once (no inner heredoc - avoids YAML issues)
               if [ ! -f "$SHARED_DIR/.env" ]; then
-                sudo bash -c "cat > '$SHARED_DIR/.env' <<EOF
-SA_PASSWORD=$SA_PASSWORD
-SQL_DB=$SQL_DB
-API_PORT=$API_HOST_PORT
-WEB_PORT=$UI_HOST_PORT
-EOF"
+                sudo bash -c "printf '%s\n' \
+                  'SA_PASSWORD=$SA_PASSWORD' \
+                  'SQL_DB=$SQL_DB' \
+                  'API_PORT=$API_HOST_PORT' \
+                  'WEB_PORT=$UI_HOST_PORT' \
+                  > '$SHARED_DIR/.env'"
                 sudo chmod 600 "$SHARED_DIR/.env"
               fi
 
-              # Extract bundle
               sudo tar -xzf /tmp/deploy.tgz -C "$RELEASE_DIR"
               sudo rm -f /tmp/deploy.tgz
 
-              # Link .env into release folder (compose reads .env from working dir)
               sudo ln -sfn "$SHARED_DIR/.env" "$RELEASE_DIR/.env"
 
-              # Run compose
               cd "$RELEASE_DIR"
               sudo docker compose -p "$PROJECT_NAME" up -d --build
               sudo docker compose -p "$PROJECT_NAME" ps
 
-              # Switch current symlink
               sudo ln -sfn "$RELEASE_DIR" "$APP_ROOT/current"
 
-              # Health checks
               curl -fsS "http://localhost:${API_HOST_PORT}/api/health" >/dev/null
               curl -fsS "http://localhost:${UI_HOST_PORT}/" >/dev/null
 
