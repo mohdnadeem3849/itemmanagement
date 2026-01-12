@@ -16,6 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 1) Write SSH key + basic diagnostics (key validity)
       - name: Prepare SSH (diagnostics)
         shell: bash
         run: |
@@ -46,18 +47,39 @@ jobs:
           echo "Validating private key can produce a public key..."
           ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub || (echo "ERROR: invalid private key content" && exit 1)
 
-          echo "Running ssh-keyscan..."
-          ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts || (echo "ERROR: ssh-keyscan failed (wrong IP or port 22 blocked)" && exit 1)
-
           echo "Prepare SSH completed."
 
-      - name: Upload app to EC2
+      # 2) NEW: Confirm EC2_HOST formatting + confirm TCP/22 is reachable from GitHub runner
+      - name: Debug EC2_HOST + test port 22
+        shell: bash
         run: |
+          set -e
+          echo "EC2_HOST length: ${#EC2_HOST}"
+          echo "EC2_HOST starts-with-ec2? $(echo "$EC2_HOST" | grep -q '^ec2-' && echo yes || echo no)"
+          echo "Testing TCP/22 reachability..."
+          timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" && echo "✅ Port 22 reachable" || (echo "❌ Port 22 NOT reachable" && exit 1)
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+
+      # 3) NEW: Add host key to known_hosts (only after port 22 reachable)
+      - name: Add EC2 to known_hosts
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          ssh-keyscan -p 22 -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload app to EC2
+        shell: bash
+        run: |
+          set -euxo pipefail
           tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui DB
           scp -i ~/.ssh/id_rsa app.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/app.tgz"
 
       - name: Deploy on EC2
+        shell: bash
         run: |
+          set -euxo pipefail
           ssh -i ~/.ssh/id_rsa "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
             set -euxo pipefail
 
