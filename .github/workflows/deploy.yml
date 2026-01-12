@@ -1,3 +1,4 @@
+=== .github/workflows/deploy.yml ===
 name: deploy-to-ec2
 
 on:
@@ -41,13 +42,13 @@ jobs:
             rm -f ~/app.tgz
             cd ~/itemmanagement
 
-            # Create .env from secrets (no secrets in git)
+            # Create .env from GitHub Secrets (no secrets in git)
             cat > .env <<EOT
-SA_PASSWORD=${{ secrets.SA_PASSWORD }}
-SQL_DB=${{ secrets.SQL_DB }}
-API_PORT=8082
-WEB_PORT=8088
-EOT
+            SA_PASSWORD=${{ secrets.SA_PASSWORD }}
+            SQL_DB=${{ secrets.SQL_DB }}
+            API_PORT=8082
+            WEB_PORT=8088
+            EOT
 
             sudo docker compose up -d --build
             sudo docker compose ps
