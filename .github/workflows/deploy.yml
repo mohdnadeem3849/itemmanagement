@@ -1,4 +1,4 @@
-name: Deploy ItemManagement (Compose bundle -> EC2)
+name: Deploy ItemManagement (Compose -> EC2)
 
 on:
   push:
@@ -15,45 +15,14 @@ env:
   UI_HOST_PORT: "8088"
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create deploy bundle (deploy.tgz)
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf deploy
-          mkdir -p deploy
-
-          cp docker-compose.yml deploy/
-          cp -R ItemManagement.Api deploy/
-          cp -R itemmanagement-ui deploy/
-          cp -R DB deploy/ || true
-
-          tar -czf deploy.tgz -C deploy .
-          ls -lah deploy.tgz
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deploy-tgz
-          path: deploy.tgz
-          if-no-files-found: error
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: deploy-tgz
-
-      - name: Setup SSH (safe + strict)
+      - name: Setup SSH
         shell: bash
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -73,18 +42,26 @@ jobs:
           chmod 600 ~/.ssh/id_key
 
           timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" >/dev/null 2>&1 || (echo "ERROR: Port 22 not reachable" && exit 1)
+
           ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
           ssh -i ~/.ssh/id_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "${{ secrets.EC2_USER }}@$EC2_HOST" "echo SSH_OK"
 
-      - name: Upload deploy.tgz to EC2
+      - name: Package app files
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui DB || tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui
+          ls -lah app.tgz
+
+      - name: Upload app.tgz to EC2
         shell: bash
         run: |
           set -euo pipefail
           scp -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
-            deploy.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/deploy.tgz"
+            app.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/app.tgz"
 
       - name: Deploy on EC2 (releases + shared env + compose up)
         shell: bash
@@ -98,57 +75,36 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Pass env vars to remote + run one clean command (no heredoc)
           ssh -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
-            "APP_ROOT='$APP_ROOT' PROJECT_NAME='$PROJECT_NAME' API_HOST_PORT='$API_HOST_PORT' UI_HOST_PORT='$UI_HOST_PORT' SA_PASSWORD='$SA_PASSWORD' SQL_DB='$SQL_DB' bash -s" << 'REMOTE'
-              set -euo pipefail
-
-              TS="$(date +%Y%m%d%H%M%S)"
-              RELEASE_DIR="$APP_ROOT/releases/$TS"
-              SHARED_DIR="$APP_ROOT/shared"
-
-              sudo mkdir -p "$APP_ROOT/releases" "$RELEASE_DIR" "$SHARED_DIR"
-
-              if ! sudo docker --version >/dev/null 2>&1; then
-                sudo apt-get update -y
-                sudo apt-get install -y docker.io
-                sudo systemctl enable docker
-                sudo systemctl start docker
-                sudo usermod -aG docker ubuntu || true
-              fi
-
-              if ! sudo docker compose version >/dev/null 2>&1; then
-                sudo apt-get update -y
-                sudo apt-get install -y docker-compose-plugin
-              fi
-
-              # Create shared .env once (no inner heredoc - avoids YAML issues)
-              if [ ! -f "$SHARED_DIR/.env" ]; then
-                sudo bash -c "printf '%s\n' \
-                  'SA_PASSWORD=$SA_PASSWORD' \
-                  'SQL_DB=$SQL_DB' \
-                  'API_PORT=$API_HOST_PORT' \
-                  'WEB_PORT=$UI_HOST_PORT' \
-                  > '$SHARED_DIR/.env'"
-                sudo chmod 600 "$SHARED_DIR/.env"
-              fi
-
-              sudo tar -xzf /tmp/deploy.tgz -C "$RELEASE_DIR"
-              sudo rm -f /tmp/deploy.tgz
-
-              sudo ln -sfn "$SHARED_DIR/.env" "$RELEASE_DIR/.env"
-
-              cd "$RELEASE_DIR"
-              sudo docker compose -p "$PROJECT_NAME" up -d --build
-              sudo docker compose -p "$PROJECT_NAME" ps
-
-              sudo ln -sfn "$RELEASE_DIR" "$APP_ROOT/current"
-
-              curl -fsS "http://localhost:${API_HOST_PORT}/api/health" >/dev/null
-              curl -fsS "http://localhost:${UI_HOST_PORT}/" >/dev/null
-
-              echo "DEPLOY_OK: $RELEASE_DIR"
-REMOTE
+            "APP_ROOT='$APP_ROOT' PROJECT_NAME='$PROJECT_NAME' API_HOST_PORT='$API_HOST_PORT' UI_HOST_PORT='$UI_HOST_PORT' SA_PASSWORD='$SA_PASSWORD' SQL_DB='$SQL_DB' bash -lc \"\
+              set -euo pipefail; \
+              TS=\$(date +%Y%m%d%H%M%S); \
+              RELEASE_DIR=\$APP_ROOT/releases/\$TS; \
+              SHARED_DIR=\$APP_ROOT/shared; \
+              sudo mkdir -p \$APP_ROOT/releases \$RELEASE_DIR \$SHARED_DIR; \
+              if ! sudo docker compose version >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y docker-compose-plugin; fi; \
+              if ! sudo docker --version >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y docker.io && sudo systemctl enable docker && sudo systemctl start docker; sudo usermod -aG docker ubuntu || true; fi; \
+              if [ ! -f \$SHARED_DIR/.env ]; then \
+                sudo bash -c 'printf %s\\\\n \
+                  SA_PASSWORD=\$SA_PASSWORD \
+                  SQL_DB=\$SQL_DB \
+                  API_PORT=\$API_HOST_PORT \
+                  WEB_PORT=\$UI_HOST_PORT \
+                  > '\$SHARED_DIR/.env''; \
+                sudo chmod 600 \$SHARED_DIR/.env; \
+              fi; \
+              sudo tar -xzf /tmp/app.tgz -C \$RELEASE_DIR; \
+              sudo rm -f /tmp/app.tgz; \
+              sudo ln -sfn \$SHARED_DIR/.env \$RELEASE_DIR/.env; \
+              cd \$RELEASE_DIR; \
+              sudo docker compose -p \$PROJECT_NAME up -d --build; \
+              sudo docker compose -p \$PROJECT_NAME ps; \
+              curl -fsS http://localhost:\$API_HOST_PORT/api/health >/dev/null; \
+              curl -fsS http://localhost:\$UI_HOST_PORT/ >/dev/null; \
+              echo DEPLOY_OK:\$RELEASE_DIR; \
+            \""
 
       - name: Show final URLs
         shell: bash
