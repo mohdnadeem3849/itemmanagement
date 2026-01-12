@@ -1,4 +1,3 @@
-=== .github/workflows/deploy.yml ===
 name: deploy-to-ec2
 
 on:
