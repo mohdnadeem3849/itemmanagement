@@ -49,7 +49,15 @@ jobs:
 
           echo "Prepare SSH completed."
 
-      # 2) NEW: Confirm EC2_HOST formatting + confirm TCP/22 is reachable from GitHub runner
+      # 2) NEW: Print public key fingerprint derived from your GitHub secret (SAFE)
+      - name: SSH key fingerprint (safe)
+        shell: bash
+        run: |
+          set -e
+          echo "Local public key fingerprint derived from secret:"
+          ssh-keygen -lf ~/.ssh/id_rsa.pub
+
+      # 3) Confirm EC2_HOST formatting + confirm TCP/22 is reachable from GitHub runner
       - name: Debug EC2_HOST + test port 22
         shell: bash
         run: |
@@ -61,13 +69,21 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
 
-      # 3) NEW: Add host key to known_hosts (only after port 22 reachable)
+      # 4) Add host key to known_hosts (only after port 22 reachable)
       - name: Add EC2 to known_hosts
         shell: bash
         run: |
           set -e
           mkdir -p ~/.ssh
           ssh-keyscan -p 22 -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      # 5) NEW: SSH auth debug (prints the real reason for "Permission denied (publickey)")
+      # NOTE: This prints connection/auth details, but NOT your private key.
+      - name: Test SSH login (debug)
+        shell: bash
+        run: |
+          set -e
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes -vvv "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" "echo SSH_OK"
 
       - name: Upload app to EC2
         shell: bash
