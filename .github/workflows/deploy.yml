@@ -9,9 +9,8 @@ permissions:
   contents: read
 
 env:
-  APP_NAME: itemmanagement
   APP_ROOT: /var/www/itemmanagement
-  PROJECT_NAME: itemmanagement          # docker compose -p name (keeps volumes stable)
+  PROJECT_NAME: itemmanagement
   API_HOST_PORT: "8082"
   UI_HOST_PORT: "8088"
 
@@ -22,15 +21,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Create a deploy bundle from your repo contents
       - name: Create deploy bundle (deploy.tgz)
         shell: bash
         run: |
           set -euo pipefail
           rm -rf deploy
-          mkdir -p deploy/app
+          mkdir -p deploy
 
-          # Copy only what the server needs
           cp docker-compose.yml deploy/
           cp -R ItemManagement.Api deploy/
           cp -R itemmanagement-ui deploy/
@@ -78,14 +75,14 @@ jobs:
           tr -d '\r' < ~/.ssh/id_key > ~/.ssh/id_key.clean && mv ~/.ssh/id_key.clean ~/.ssh/id_key
           chmod 600 ~/.ssh/id_key
 
-          # Quick reachability test
+          # Port 22 reachability test
           timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" >/dev/null 2>&1 || (echo "ERROR: Port 22 not reachable" && exit 1)
 
           # Pin host key
           ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-          # Verify SSH auth works
+          # Verify SSH auth
           ssh -i ~/.ssh/id_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "${{ secrets.EC2_USER }}@$EC2_HOST" "echo SSH_OK"
 
@@ -98,77 +95,74 @@ jobs:
 
       - name: Deploy on EC2 (releases + shared env + compose up)
         shell: bash
+        env:
+          # pass secrets safely to the runner step (not inside heredoc)
+          SA_PASSWORD: ${{ secrets.SA_PASSWORD }}
+          SQL_DB: ${{ secrets.SQL_DB }}
+          APP_ROOT: ${{ env.APP_ROOT }}
+          PROJECT_NAME: ${{ env.PROJECT_NAME }}
+          API_HOST_PORT: ${{ env.API_HOST_PORT }}
+          UI_HOST_PORT: ${{ env.UI_HOST_PORT }}
         run: |
           set -euo pipefail
+
           ssh -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'SSH'
-            set -euo pipefail
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+            "APP_ROOT='$APP_ROOT' PROJECT_NAME='$PROJECT_NAME' API_HOST_PORT='$API_HOST_PORT' UI_HOST_PORT='$UI_HOST_PORT' SA_PASSWORD='$SA_PASSWORD' SQL_DB='$SQL_DB' bash -s" << 'REMOTE'
+              set -euo pipefail
 
-            APP_ROOT="${APP_ROOT:-/var/www/itemmanagement}"
-            PROJECT_NAME="${PROJECT_NAME:-itemmanagement}"
-            API_HOST_PORT="${API_HOST_PORT:-8082}"
-            UI_HOST_PORT="${UI_HOST_PORT:-8088}"
+              TS="$(date +%Y%m%d%H%M%S)"
+              RELEASE_DIR="$APP_ROOT/releases/$TS"
+              SHARED_DIR="$APP_ROOT/shared"
 
-            TS="$(date +%Y%m%d%H%M%S)"
-            RELEASE_DIR="$APP_ROOT/releases/$TS"
-            SHARED_DIR="$APP_ROOT/shared"
+              sudo mkdir -p "$APP_ROOT/releases" "$RELEASE_DIR" "$SHARED_DIR"
 
-            sudo mkdir -p "$APP_ROOT/releases" "$RELEASE_DIR" "$SHARED_DIR"
+              # Ensure docker + compose plugin exist
+              if ! sudo docker --version >/dev/null 2>&1; then
+                sudo apt-get update -y
+                sudo apt-get install -y docker.io
+                sudo systemctl enable docker
+                sudo systemctl start docker
+                sudo usermod -aG docker ubuntu || true
+              fi
 
-            # Ensure docker + compose plugin exist
-            if ! sudo docker --version >/dev/null 2>&1; then
-              echo "Docker missing - installing..."
-              sudo apt-get update -y
-              sudo apt-get install -y docker.io
-              sudo systemctl enable docker
-              sudo systemctl start docker
-              sudo usermod -aG docker ubuntu || true
-            fi
+              if ! sudo docker compose version >/dev/null 2>&1; then
+                sudo apt-get update -y
+                sudo apt-get install -y docker-compose-plugin
+              fi
 
-            if ! sudo docker compose version >/dev/null 2>&1; then
-              echo "docker compose plugin missing - installing..."
-              sudo apt-get update -y
-              sudo apt-get install -y docker-compose-plugin
-            fi
-
-            # Create shared .env once (DON'T overwrite on future deploys)
-            if [ ! -f "$SHARED_DIR/.env" ]; then
-              echo "Creating $SHARED_DIR/.env ..."
-              sudo bash -c "cat > '$SHARED_DIR/.env' <<'EOF'
-SA_PASSWORD=${{ secrets.SA_PASSWORD }}
-SQL_DB=${{ secrets.SQL_DB }}
-API_PORT=${API_HOST_PORT}
-WEB_PORT=${UI_HOST_PORT}
+              # Create shared .env once (don't overwrite on future deploys)
+              if [ ! -f "$SHARED_DIR/.env" ]; then
+                sudo bash -c "cat > '$SHARED_DIR/.env' <<EOF
+SA_PASSWORD=$SA_PASSWORD
+SQL_DB=$SQL_DB
+API_PORT=$API_HOST_PORT
+WEB_PORT=$UI_HOST_PORT
 EOF"
-              sudo chmod 600 "$SHARED_DIR/.env"
-            else
-              echo "Shared .env already exists. Keeping it."
-            fi
+                sudo chmod 600 "$SHARED_DIR/.env"
+              fi
 
-            # Extract deploy bundle
-            sudo tar -xzf /tmp/deploy.tgz -C "$RELEASE_DIR"
-            sudo rm -f /tmp/deploy.tgz
+              # Extract bundle
+              sudo tar -xzf /tmp/deploy.tgz -C "$RELEASE_DIR"
+              sudo rm -f /tmp/deploy.tgz
 
-            # Link .env into release (compose loads .env in same folder)
-            sudo ln -sfn "$SHARED_DIR/.env" "$RELEASE_DIR/.env"
+              # Link .env into release folder (compose reads .env from working dir)
+              sudo ln -sfn "$SHARED_DIR/.env" "$RELEASE_DIR/.env"
 
-            # Bring up stack
-            cd "$RELEASE_DIR"
-            sudo docker compose -p "$PROJECT_NAME" up -d --build
-            sudo docker compose -p "$PROJECT_NAME" ps
+              # Run compose
+              cd "$RELEASE_DIR"
+              sudo docker compose -p "$PROJECT_NAME" up -d --build
+              sudo docker compose -p "$PROJECT_NAME" ps
 
-            # Point "current" to latest release
-            sudo ln -sfn "$RELEASE_DIR" "$APP_ROOT/current"
+              # Switch current symlink
+              sudo ln -sfn "$RELEASE_DIR" "$APP_ROOT/current"
 
-            # Health checks
-            echo "Checking API health..."
-            curl -fsS "http://localhost:${API_HOST_PORT}/api/health" >/dev/null
+              # Health checks
+              curl -fsS "http://localhost:${API_HOST_PORT}/api/health" >/dev/null
+              curl -fsS "http://localhost:${UI_HOST_PORT}/" >/dev/null
 
-            echo "Checking UI..."
-            curl -fsS "http://localhost:${UI_HOST_PORT}/" >/dev/null
-
-            echo "DEPLOY_OK: $RELEASE_DIR"
-SSH
+              echo "DEPLOY_OK: $RELEASE_DIR"
+REMOTE
 
       - name: Show final URLs
         shell: bash
