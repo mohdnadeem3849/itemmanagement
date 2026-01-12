@@ -1,113 +1,330 @@
-name: Deploy ItemManagement (Compose -> EC2)
+Nadeem
+nadeem02972
+Sharing their screen
+
+Nadeem — 12/11/2025 7:10 PM
+Bhai check it out
+Emad_Moh — 12/11/2025 7:10 PM
+link ?
+Nadeem — 12/11/2025 7:11 PM
+https://github.com/mohdnadeem3849/JsonLoginApi.git
+GitHub
+GitHub - mohdnadeem3849/JsonLoginApi: Simple .NET 8 API with JSON l...
+Simple .NET 8 API with JSON login. Contribute to mohdnadeem3849/JsonLoginApi development by creating an account on GitHub.
+GitHub - mohdnadeem3849/JsonLoginApi: Simple .NET 8 API with JSON l...
+Check karke bolo aap
+Nadeem — 12/11/2025 7:18 PM
+Aapki email bhejo collab karke dekhtu
+Hora ya nai
+Emad_Moh — 12/11/2025 7:19 PM
+bhai perfect!! swagger worked on my end!
+email ya git ka username ?
+Nadeem — 12/11/2025 7:19 PM
+Kuch b collab kartu
+Emad_Moh — 12/11/2025 7:19 PM
+emadrockz@gmail.com
+Nadeem — 12/11/2025 7:20 PM
+Check karo aap
+Invite kara
+Emad_Moh — 12/11/2025 7:21 PM
+accept krliya mai,
+Nadeem — 12/11/2025 7:22 PM
+Aab devops valaon ku karna hai
+Emad_Moh — 12/11/2025 7:22 PM
+bhai study room mai join karke meku ek baar batao na git pay kaisa kare ap collaborator
+Nadeem — 12/11/2025 7:23 PM
+ok
+Nadeem — 12/11/2025 8:06 PM
+imad app class mein hai toh unlog ku zara usernames bhejdo bolo na discussion mein
+Emad_Moh — 12/11/2025 8:06 PM
+bhai unloga kya ki kuch aur ich karlere
+bhai inlog kuch ki aur ich practise karlere
+Nadeem — 12/11/2025 8:08 PM
+ok phir
+hannan bhai ku msg karu kya
+Emad_Moh — 12/11/2025 8:09 PM
+hao ap b karo mai b karru
+bhai kya karna bolke
+meeting mai bolu kya inlog ku ...ye task karo bolke ?
+Nadeem — 12/11/2025 8:12 PM
+hn ek baar bolo
+unlog bade hai bhai kuch bolna bole toh
+mai hannan bhai ku msg kara
+Emad_Moh — 12/11/2025 8:13 PM
+hanna bhaa i bole stay with them 
+sirf rukru bas ab
+agaye hanna bhai
+meeting mai
+Nadeem — 12/11/2025 8:14 PM
+maich msg kara tha
+Emad_Moh — 12/11/2025 8:15 PM
+bhai apne ku b rehna padhta kate 🙁 
+arey bhai!!
+massla ni mai rukru idhar ich, apku kaam hai toh karlo ap , hannan bhai aaaye toh boltu mai
+Nadeem — 12/11/2025 8:16 PM
+ok mai meeting toh join hogaya
+Emad_Moh — 12/11/2025 10:10 PM
+bhai
+Emad_Moh — 12/11/2025 10:29 PM
+knmsoutlook 
+github username kamaaal bhai
+Nadeem — 12/11/2025 10:36 PM
+ok
+Nadeem — 12/11/2025 10:44 PM
+acha hua mai meeting mein tha hannan bhai kirrak hogaye
+Emad_Moh — 1/6/2026 9:55 PM
+bhai kal hannan bhai prompt diye baad banadinge
+we need to create a react application 
+
+ui should add delete items
+
+first login, inside add/delete/update
+Expand
+taskfordevops.txt
+1 KB
+Nadeem — 1/6/2026 10:09 PM
+ok bhai
+Nadeem — 1/7/2026 9:11 PM
+aslkm
+Emad_Moh — 1/7/2026 9:11 PM
+walaikumassalam bhai
+Nadeem — 1/7/2026 9:11 PM
+ek question ai
+hai*
+api+ui+db sab ek repo mein dalna hai
+Emad_Moh — 1/7/2026 9:13 PM
+bhai not sure bhai, but UI alag daldinge sonchru mai, api + db ek jagah rakkhe
+Nadeem — 1/7/2026 9:14 PM
+ok
+hannan bhai se confirm karletu ek baar
+Nadeem — 1/7/2026 10:55 PM
+everything should be in one repo
+Emad_Moh — 1/7/2026 11:56 PM
+Thank you bhai
+Emad_Moh — 6:03 AM
+Image
+98.88.81.194
+[Convert]::ToBase64String((1..64 | ForEach-Object { Get-Random -Maximum 256 }))
+
+
+jwt generator use powershell to bash, and save it
+Emad_Moh — 6:19 AM
+name: Deploy to EC2 (Docker Compose)
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "master"]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
-env:
-  APP_ROOT: /var/www/itemmanagement
-  PROJECT_NAME: itemmanagement
-  API_HOST_PORT: "8082"
-  UI_HOST_PORT: "8088"
-
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Create deploy.tgz (tracked files only)
+        run: |
+          git ls-files -z | tar --null -T - -czf deploy.tgz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-tgz
+          path: deploy.tgz
+          if-no-files-found: error
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-tgz
+          path: .
+
       - name: Setup SSH
-        shell: bash
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
-          set -euo pipefail
           mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
-          if [ -z "${EC2_SSH_PRIVATE_KEY:-}" ]; then
-            echo "ERROR: EC2_SSH_PRIVATE_KEY secret is empty."
-            exit 1
-          fi
-
-          printf "%s" "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/id_key
-          tr -d '\r' < ~/.ssh/id_key > ~/.ssh/id_key.clean && mv ~/.ssh/id_key.clean ~/.ssh/id_key
-          chmod 600 ~/.ssh/id_key
-
-          timeout 10 bash -c "</dev/tcp/$EC2_HOST/22" >/dev/null 2>&1 || (echo "ERROR: Port 22 not reachable" && exit 1)
-
-          ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-
-          ssh -i ~/.ssh/id_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$EC2_USER@$EC2_HOST" "echo SSH_OK"
-
-      - name: Package app files
-        shell: bash
-        run: |
-          set -euo pipefail
-          tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui DB || tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui
-          ls -lah app.tgz
-
-      - name: Upload app.tgz to EC2
-        shell: bash
-        run: |
-          set -euo pipefail
-          scp -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
-            app.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/app.tgz"
-
-      - name: Deploy on EC2 (releases + shared env + compose up)
-        shell: bash
+      - name: Create app.env (runner)
         env:
           SA_PASSWORD: ${{ secrets.SA_PASSWORD }}
-          SQL_DB: ${{ secrets.SQL_DB }}   # IMPORTANT: create this secret (see below)
-          APP_ROOT: ${{ env.APP_ROOT }}
-          PROJECT_NAME: ${{ env.PROJECT_NAME }}
-          API_HOST_PORT: ${{ env.API_HOST_PORT }}
-          UI_HOST_PORT: ${{ env.UI_HOST_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          JWT_KEY: ${{ secrets.JWT_KEY }}
         run: |
-          set -euo pipefail
+          umask 077
+          printf "MSSQL_SA_PASSWORD=%s\nDB_NAME=%s\nJWT_KEY=%s\n" \
+            "$SA_PASSWORD" "$DB_NAME" "$JWT_KEY" > app.env
 
-          ssh -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
-            "APP_ROOT='$APP_ROOT' PROJECT_NAME='$PROJECT_NAME' API_HOST_PORT='$API_HOST_PORT' UI_HOST_PORT='$UI_HOST_PORT' SA_PASSWORD='$SA_PASSWORD' SQL_DB='$SQL_DB' bash -lc \"\
-              set -euo pipefail; \
-              TS=\$(date +%Y%m%d%H%M%S); \
-              RELEASE_DIR=\$APP_ROOT/releases/\$TS; \
-              SHARED_DIR=\$APP_ROOT/shared; \
-              sudo mkdir -p \$APP_ROOT/releases \$RELEASE_DIR \$SHARED_DIR; \
-              if ! sudo docker compose version >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y docker-compose-plugin; fi; \
-              if ! sudo docker --version >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y docker.io && sudo systemctl enable docker && sudo systemctl start docker; sudo usermod -aG docker ubuntu || true; fi; \
-              if [ ! -f \$SHARED_DIR/.env ]; then \
-                sudo bash -c 'printf %s\\\\n \
-                  SA_PASSWORD=\$SA_PASSWORD \
-                  SQL_DB=\$SQL_DB \
-                  API_PORT=\$API_HOST_PORT \
-                  WEB_PORT=\$UI_HOST_PORT \
-                  > '\$SHARED_DIR/.env''; \
-                sudo chmod 600 \$SHARED_DIR/.env; \
-              fi; \
-              sudo tar -xzf /tmp/app.tgz -C \$RELEASE_DIR; \
-              sudo rm -f /tmp/app.tgz; \
-              sudo ln -sfn \$SHARED_DIR/.env \$RELEASE_DIR/.env; \
-              cd \$RELEASE_DIR; \
-              sudo docker compose -p \$PROJECT_NAME up -d --build; \
-              sudo docker compose -p \$PROJECT_NAME ps; \
-              curl -fsS http://localhost:\$API_HOST_PORT/api/health >/dev/null; \
-              curl -fsS http://localhost:\$UI_HOST_PORT/ >/dev/null; \
-              echo DEPLOY_OK:\$RELEASE_DIR; \
-            \""
-
-      - name: Show final URLs
-        shell: bash
+      - name: Upload deploy.tgz + app.env to EC2
         run: |
-          echo "UI:  http://${{ secrets.EC2_HOST }}:${{ env.UI_HOST_PORT }}"
-          echo "API: http://${{ secrets.EC2_HOST }}:${{ env.API_HOST_PORT }}/api/health"
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
+            ./deploy.tgz ./app.env \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'SSH'
+              set -euo pipefail
+
+              APP_NAME="role-item-system"
+              APP_ROOT="/var/www/roleitems"
+              RELEASES_DIR="$APP_ROOT/releases"
+              SHARED_DIR="$APP_ROOT/shared"
+              COMPOSE_FILE="docker-compose.yml"
+              ENV_FILE=".env"
+              KEEP_RELEASES=5
+
+              TS="$(date +%Y%m%d%H%M%S)"
+              NEW_RELEASE="$RELEASES_DIR/$TS"
+
+              echo "==> Deploying $APP_NAME"
+              echo "==> New release: $NEW_RELEASE"
+
+              sudo mkdir -p "$NEW_RELEASE" "$SHARED_DIR"
+
+              # Extract new release
+              sudo tar -xzf /tmp/deploy.tgz -C "$NEW_RELEASE"
+
+              # Install shared env
+              sudo mv /tmp/app.env "$SHARED_DIR/$ENV_FILE"
+              sudo chmod 600 "$SHARED_DIR/$ENV_FILE"
+
+              # Link env into release
+              sudo ln -sfn "$SHARED_DIR/$ENV_FILE" "$NEW_RELEASE/$ENV_FILE"
+
+              # Flip current symlink
+              sudo ln -sfn "$NEW_RELEASE" "$APP_ROOT/current"
+
+              cd "$APP_ROOT/current"
+
+              if [ ! -f "$COMPOSE_FILE" ]; then
+                echo "ERROR: $COMPOSE_FILE not found in $(pwd)"
+                echo "Directory contents:"
+                ls -la
+                exit 1
+... (12 lines left)
+Collapse
+message.txt
+4 KB
+﻿
+Emad_Moh
+emad_moh
+name: Deploy to EC2 (Docker Compose)
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create deploy.tgz (tracked files only)
+        run: |
+          git ls-files -z | tar --null -T - -czf deploy.tgz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-tgz
+          path: deploy.tgz
+          if-no-files-found: error
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-tgz
+          path: .
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Create app.env (runner)
+        env:
+          SA_PASSWORD: ${{ secrets.SA_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          JWT_KEY: ${{ secrets.JWT_KEY }}
+        run: |
+          umask 077
+          printf "MSSQL_SA_PASSWORD=%s\nDB_NAME=%s\nJWT_KEY=%s\n" \
+            "$SA_PASSWORD" "$DB_NAME" "$JWT_KEY" > app.env
+
+      - name: Upload deploy.tgz + app.env to EC2
+        run: |
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
+            ./deploy.tgz ./app.env \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/
+
+      - name: Deploy on EC2
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
+            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'SSH'
+              set -euo pipefail
+
+              APP_NAME="role-item-system"
+              APP_ROOT="/var/www/roleitems"
+              RELEASES_DIR="$APP_ROOT/releases"
+              SHARED_DIR="$APP_ROOT/shared"
+              COMPOSE_FILE="docker-compose.yml"
+              ENV_FILE=".env"
+              KEEP_RELEASES=5
+
+              TS="$(date +%Y%m%d%H%M%S)"
+              NEW_RELEASE="$RELEASES_DIR/$TS"
+
+              echo "==> Deploying $APP_NAME"
+              echo "==> New release: $NEW_RELEASE"
+
+              sudo mkdir -p "$NEW_RELEASE" "$SHARED_DIR"
+
+              # Extract new release
+              sudo tar -xzf /tmp/deploy.tgz -C "$NEW_RELEASE"
+
+              # Install shared env
+              sudo mv /tmp/app.env "$SHARED_DIR/$ENV_FILE"
+              sudo chmod 600 "$SHARED_DIR/$ENV_FILE"
+
+              # Link env into release
+              sudo ln -sfn "$SHARED_DIR/$ENV_FILE" "$NEW_RELEASE/$ENV_FILE"
+
+              # Flip current symlink
+              sudo ln -sfn "$NEW_RELEASE" "$APP_ROOT/current"
+
+              cd "$APP_ROOT/current"
+
+              if [ ! -f "$COMPOSE_FILE" ]; then
+                echo "ERROR: $COMPOSE_FILE not found in $(pwd)"
+                echo "Directory contents:"
+                ls -la
+                exit 1
+              fi
+
+              sudo docker --version
+              sudo docker compose version
+
+              sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build --remove-orphans
+
+              # Keep last 5 releases
+              sudo bash -c 'ls -1dt "$1"/* | tail -n +6 | xargs -r rm -rf' _ "$RELEASES_DIR"
+
+              echo "==> Done. Current -> $(readlink -f "$APP_ROOT/current")"
+          SSH
