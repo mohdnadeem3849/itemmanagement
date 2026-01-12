@@ -27,17 +27,18 @@ jobs:
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
           if [ -z "${EC2_SSH_PRIVATE_KEY:-}" ]; then
-            echo "ERROR: EC2_SSH_KEY secret is empty."
+            echo "ERROR: EC2_SSH_PRIVATE_KEY secret is empty."
             exit 1
           fi
 
-          printf "%s" "$EC2_SSH_KEY" > ~/.ssh/id_key
+          printf "%s" "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/id_key
           tr -d '\r' < ~/.ssh/id_key > ~/.ssh/id_key.clean && mv ~/.ssh/id_key.clean ~/.ssh/id_key
           chmod 600 ~/.ssh/id_key
 
@@ -47,7 +48,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
           ssh -i ~/.ssh/id_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "${{ secrets.EC2_USER }}@$EC2_HOST" "echo SSH_OK"
+            "$EC2_USER@$EC2_HOST" "echo SSH_OK"
 
       - name: Package app files
         shell: bash
@@ -67,7 +68,7 @@ jobs:
         shell: bash
         env:
           SA_PASSWORD: ${{ secrets.SA_PASSWORD }}
-          SQL_DB: ${{ secrets.SQL_DB }}
+          SQL_DB: ${{ secrets.SQL_DB }}   # IMPORTANT: create this secret (see below)
           APP_ROOT: ${{ env.APP_ROOT }}
           PROJECT_NAME: ${{ env.PROJECT_NAME }}
           API_HOST_PORT: ${{ env.API_HOST_PORT }}
@@ -75,7 +76,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Pass env vars to remote + run one clean command (no heredoc)
           ssh -i ~/.ssh/id_key -o StrictHostKeyChecking=yes \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
             "APP_ROOT='$APP_ROOT' PROJECT_NAME='$PROJECT_NAME' API_HOST_PORT='$API_HOST_PORT' UI_HOST_PORT='$UI_HOST_PORT' SA_PASSWORD='$SA_PASSWORD' SQL_DB='$SQL_DB' bash -lc \"\
