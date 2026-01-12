@@ -25,14 +25,14 @@ jobs:
       - name: Setup SSH
         shell: bash
         env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          if [ -z "${EC2_SSH_KEY:-}" ]; then
+          if [ -z "${EC2_SSH_PRIVATE_KEY:-}" ]; then
             echo "ERROR: EC2_SSH_KEY secret is empty."
             exit 1
           fi
