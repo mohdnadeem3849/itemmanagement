@@ -17,11 +17,21 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Prepare SSH
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+
+          # Write the private key safely (removes Windows CRLF)
+          printf '%s' "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+          # Sanity checks (won't print secrets)
+          test -n "${{ secrets.EC2_HOST }}"
+          test -s ~/.ssh/id_rsa
+
+          # Add EC2 host key
+          ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Upload app to EC2
         run: |
