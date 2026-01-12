@@ -1,67 +1,34 @@
-name: deploy-to-ec2
-
-on:
-  workflow_dispatch:
-  push:
-    branches: ["main"]
-
-permissions:
-  contents: read
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Prepare SSH
+      - name: Prepare SSH (diagnostics)
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           mkdir -p ~/.ssh
 
-          # Write the private key safely (removes Windows CRLF)
+          echo "Checking secrets presence..."
+          if [ -z "${{ secrets.EC2_HOST }}" ]; then
+            echo "ERROR: EC2_HOST secret is empty or missing"
+            exit 1
+          fi
+          if [ -z "${{ secrets.EC2_USER }}" ]; then
+            echo "ERROR: EC2_USER secret is empty or missing"
+            exit 1
+          fi
+          if [ -z "${{ secrets.EC2_SSH_KEY }}" ]; then
+            echo "ERROR: EC2_SSH_KEY secret is empty or missing"
+            exit 1
+          fi
+
+          echo "Writing SSH key..."
           printf '%s' "${{ secrets.EC2_SSH_KEY }}" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          # Sanity checks (won't print secrets)
-          test -n "${{ secrets.EC2_HOST }}"
-          test -s ~/.ssh/id_rsa
+          echo "Key file size:"
+          wc -c ~/.ssh/id_rsa
 
-          # Add EC2 host key
-          ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+          echo "Testing key format (should say: 'RSA' or 'ED25519' or similar)..."
+          ssh-keygen -lf ~/.ssh/id_rsa || (echo "ERROR: private key format is invalid" && exit 1)
 
-      - name: Upload app to EC2
-        run: |
-          tar -czf app.tgz docker-compose.yml ItemManagement.Api itemmanagement-ui DB
-          scp -i ~/.ssh/id_rsa app.tgz "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/app.tgz"
+          echo "Running ssh-keyscan to ${{ secrets.EC2_HOST }}..."
+          ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts || (echo "ERROR: ssh-keyscan failed (wrong IP or port 22 blocked)" && exit 1)
 
-      - name: Deploy on EC2
-        run: |
-          ssh -i ~/.ssh/id_rsa "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
-            set -euxo pipefail
-
-            sudo apt-get update -y || true
-            sudo apt-get install -y curl git || true
-
-            mkdir -p ~/itemmanagement
-            tar -xzf ~/app.tgz -C ~/itemmanagement
-            rm -f ~/app.tgz
-            cd ~/itemmanagement
-
-            # Create .env from GitHub Secrets (no secrets in git)
-            cat > .env <<EOT
-            SA_PASSWORD=${{ secrets.SA_PASSWORD }}
-            SQL_DB=${{ secrets.SQL_DB }}
-            API_PORT=8082
-            WEB_PORT=8088
-            EOT
-
-            sudo docker compose up -d --build
-            sudo docker compose ps
-
-            curl -fsS http://localhost:8082/api/health
-            curl -fsS http://localhost:8088/ >/dev/null
-          EOF
+          echo "Prepare SSH completed."
