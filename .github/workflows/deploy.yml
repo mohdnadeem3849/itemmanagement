@@ -5,6 +5,9 @@ on:
     branches: ["main", "master"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,8 +16,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create deploy.tgz (tracked files only)
+        shell: bash
         run: |
+          set -euo pipefail
           git ls-files -z | tar --null -T - -czf deploy.tgz
+          ls -lah deploy.tgz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -33,33 +39,63 @@ jobs:
           name: deploy-tgz
           path: .
 
-      - name: Setup SSH
+      - name: Setup SSH (robust)
+        shell: bash
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+
+          if [ -z "${EC2_SSH_PRIVATE_KEY:-}" ]; then
+            echo "ERROR: EC2_SSH_PRIVATE_KEY is empty"
+            exit 1
+          fi
+
+          # Write key safely (preserve newlines) + remove Windows CRLF
+          printf "%s" "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+          # Pin host key
+          ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          # Quick auth test (safe)
+          ssh -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$EC2_USER@$EC2_HOST" "echo SSH_OK"
 
       - name: Create app.env (runner)
+        shell: bash
         env:
           SA_PASSWORD: ${{ secrets.SA_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
+          SQL_DB: ${{ secrets.SQL_DB }}
           JWT_KEY: ${{ secrets.JWT_KEY }}
         run: |
+          set -euo pipefail
           umask 077
-          printf "MSSQL_SA_PASSWORD=%s\nDB_NAME=%s\nJWT_KEY=%s\n" \
-            "$SA_PASSWORD" "$DB_NAME" "$JWT_KEY" > app.env
+          # Use the same variable names your compose expects
+          printf "MSSQL_SA_PASSWORD=%s\nSQL_DB=%s\nJWT_KEY=%s\n" \
+            "$SA_PASSWORD" "$SQL_DB" "$JWT_KEY" > app.env
+          echo "app.env created (size only):"
+          wc -c app.env
 
       - name: Upload deploy.tgz + app.env to EC2
+        shell: bash
         run: |
+          set -euo pipefail
           scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
             ./deploy.tgz ./app.env \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/"
 
       - name: Deploy on EC2
+        shell: bash
         run: |
+          set -euo pipefail
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
-            ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'SSH'
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" <<'SSH'
               set -euo pipefail
 
               APP_NAME="role-item-system"
@@ -80,8 +116,9 @@ jobs:
 
               # Extract new release
               sudo tar -xzf /tmp/deploy.tgz -C "$NEW_RELEASE"
+              sudo rm -f /tmp/deploy.tgz
 
-              # Install shared env
+              # Install shared env (move to shared, name it .env)
               sudo mv /tmp/app.env "$SHARED_DIR/$ENV_FILE"
               sudo chmod 600 "$SHARED_DIR/$ENV_FILE"
 
@@ -103,10 +140,11 @@ jobs:
               sudo docker --version
               sudo docker compose version
 
+              # Start/update stack
               sudo docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build --remove-orphans
 
-              # Keep last 5 releases
-              sudo bash -c 'ls -1dt "$1"/* | tail -n +6 | xargs -r rm -rf' _ "$RELEASES_DIR"
+              # Cleanup old releases (keep last 5)
+              sudo bash -c "ls -1dt '$RELEASES_DIR'/* | tail -n +$((KEEP_RELEASES+1)) | xargs -r rm -rf"
 
               echo "==> Done. Current -> $(readlink -f "$APP_ROOT/current")"
-          SSH
+SSH
