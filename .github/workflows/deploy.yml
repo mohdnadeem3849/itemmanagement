@@ -82,8 +82,11 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          printf "MSSQL_SA_PASSWORD=%s\nSQL_DB=%s\nJWT_KEY=%s\n" \
+
+          # IMPORTANT: docker-compose uses ${SA_PASSWORD}, so write SA_PASSWORD (not MSSQL_SA_PASSWORD)
+          printf "SA_PASSWORD=%s\nSQL_DB=%s\nJWT_KEY=%s\n" \
             "$SA_PASSWORD" "$SQL_DB" "$JWT_KEY" > app.env
+
           wc -c app.env
 
       - name: Upload deploy.tgz + app.env to EC2
