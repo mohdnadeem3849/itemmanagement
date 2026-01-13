@@ -39,7 +39,7 @@ jobs:
           name: deploy-tgz
           path: .
 
-      - name: Setup SSH (robust + debug)  # <-- FIXED for base64 secret
+      - name: Setup SSH (robust + debug)
         shell: bash
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -56,8 +56,9 @@ jobs:
             exit 1
           fi
 
-          # IMPORTANT: EC2_SSH_PRIVATE_KEY secret is BASE64 now
-          echo "$EC2_SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
+          # secret is BASE64 of the PRIVATE KEY bytes
+          printf "%s" "$EC2_SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
+          tr -d '\r' < ~/.ssh/id_rsa > ~/.ssh/id_rsa.clean && mv ~/.ssh/id_rsa.clean ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
           ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
@@ -67,9 +68,6 @@ jobs:
 
           echo "Runner SSH key fingerprint (SHA256):"
           ssh-keygen -y -f ~/.ssh/id_rsa | ssh-keygen -lf -
-
-          echo "Runner SSH key fingerprint (MD5):"
-          ssh-keygen -y -f ~/.ssh/id_rsa | ssh-keygen -E md5 -lf -
 
           ssh -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$EC2_USER@$EC2_HOST" "echo SSH_OK"
