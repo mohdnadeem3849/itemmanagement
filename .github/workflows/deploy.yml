@@ -39,7 +39,7 @@ jobs:
           name: deploy-tgz
           path: .
 
-      - name: Setup SSH (base64 key + resilient known_hosts)
+      - name: Setup SSH (robust + debug)  # <-- FIXED for base64 secret
         shell: bash
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -56,37 +56,22 @@ jobs:
             exit 1
           fi
 
-          # Decode base64 private key (strip spaces/newlines just in case)
-          printf "%s" "$EC2_SSH_PRIVATE_KEY" | tr -d '\r\n ' | base64 -d > ~/.ssh/id_rsa
+          # IMPORTANT: EC2_SSH_PRIVATE_KEY secret is BASE64 now
+          echo "$EC2_SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          : > ~/.ssh/known_hosts
+          ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-          echo "==> Trying ssh-keyscan (3 attempts)..."
-          for i in 1 2 3; do
-            ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null && break
-            sleep 2
-          done
-
           echo "USER=$EC2_USER HOST=$EC2_HOST"
-          echo "known_hosts lines: $(wc -l < ~/.ssh/known_hosts || echo 0)"
 
-          # If keyscan didn't populate known_hosts, fall back to accept-new
-          if [ "$(wc -l < ~/.ssh/known_hosts)" -eq 0 ]; then
-            echo "WARNING: ssh-keyscan failed; using StrictHostKeyChecking=accept-new"
-            SSH_STRICT="-o StrictHostKeyChecking=accept-new"
-          else
-            SSH_STRICT="-o StrictHostKeyChecking=yes"
-          fi
+          echo "Runner SSH key fingerprint (SHA256):"
+          ssh-keygen -y -f ~/.ssh/id_rsa | ssh-keygen -lf -
 
-          echo "==> SSH test..."
-          ssh -i ~/.ssh/id_rsa \
-            -o BatchMode=yes \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            -o TCPKeepAlive=yes \
-            $SSH_STRICT \
+          echo "Runner SSH key fingerprint (MD5):"
+          ssh-keygen -y -f ~/.ssh/id_rsa | ssh-keygen -E md5 -lf -
+
+          ssh -i ~/.ssh/id_rsa -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$EC2_USER@$EC2_HOST" "echo SSH_OK"
 
       - name: Create app.env (runner)
@@ -98,34 +83,29 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+
+          # docker-compose uses ${SA_PASSWORD}, so write SA_PASSWORD
           printf "SA_PASSWORD=%s\nSQL_DB=%s\nJWT_KEY=%s\n" \
             "$SA_PASSWORD" "$SQL_DB" "$JWT_KEY" > app.env
+
           wc -c app.env
 
       - name: Upload deploy.tgz + app.env to EC2
         shell: bash
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/id_rsa \
-            -o StrictHostKeyChecking=accept-new \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            -o TCPKeepAlive=yes \
+          scp -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
             ./deploy.tgz ./app.env \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/tmp/"
 
-      - name: Deploy on EC2 (safe script)
+      - name: Deploy on EC2 (no heredoc)
         shell: bash
         run: |
           set -euo pipefail
 
-          ssh -i ~/.ssh/id_rsa \
-            -o StrictHostKeyChecking=accept-new \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            -o TCPKeepAlive=yes \
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=yes \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
-            "sudo bash -lc 'set -euo pipefail
+            "bash -lc 'set -euo pipefail
               APP_NAME=role-item-system
               APP_ROOT=/var/www/roleitems
               RELEASES_DIR=\$APP_ROOT/releases
@@ -140,49 +120,22 @@ jobs:
               echo \"==> Deploying \$APP_NAME\"
               echo \"==> New release: \$NEW_RELEASE\"
 
-              mkdir -p \"\$NEW_RELEASE\" \"\$SHARED_DIR\" \"\$RELEASES_DIR\"
+              sudo mkdir -p \"\$NEW_RELEASE\" \"\$SHARED_DIR\"
 
-              # Extract release
-              tar -xzf /tmp/deploy.tgz -C \"\$NEW_RELEASE\"
-              rm -f /tmp/deploy.tgz
+              sudo tar -xzf /tmp/deploy.tgz -C \"\$NEW_RELEASE\"
+              sudo rm -f /tmp/deploy.tgz
 
-              # Move env into shared
-              mv /tmp/app.env \"\$SHARED_DIR/\$ENV_FILE\"
-              chmod 600 \"\$SHARED_DIR/\$ENV_FILE\"
+              sudo mv /tmp/app.env \"\$SHARED_DIR/\$ENV_FILE\"
+              sudo chmod 600 \"\$SHARED_DIR/\$ENV_FILE\"
 
-              # Link env + switch current
-              ln -sfn \"\$SHARED_DIR/\$ENV_FILE\" \"\$NEW_RELEASE/\$ENV_FILE\"
-              ln -sfn \"\$NEW_RELEASE\" \"\$APP_ROOT/current\"
+              sudo ln -sfn \"\$SHARED_DIR/\$ENV_FILE\" \"\$NEW_RELEASE/\$ENV_FILE\"
+              sudo ln -sfn \"\$NEW_RELEASE\" \"\$APP_ROOT/current\"
 
               cd \"\$APP_ROOT/current\"
 
-              # Start containers detached
-              docker compose -f \"\$COMPOSE_FILE\" --env-file \"\$ENV_FILE\" up -d --build --remove-orphans
+              sudo docker compose -f \"\$COMPOSE_FILE\" --env-file \"\$ENV_FILE\" up -d --build --remove-orphans
 
-              echo \"==> docker compose ps\"
-              docker compose -f \"\$COMPOSE_FILE\" --env-file \"\$ENV_FILE\" ps
+              sudo bash -c \"ls -1dt '\$RELEASES_DIR'/* | tail -n +\$((KEEP_RELEASES+1)) | xargs -r rm -rf\"
 
-              # Fail if unhealthy/exited, print logs
-              if docker compose -f \"\$COMPOSE_FILE\" --env-file \"\$ENV_FILE\" ps | grep -E \"(unhealthy|Exit)\"; then
-                echo \"==> Some services unhealthy/exited. Logs (tail 200):\"
-                docker compose -f \"\$COMPOSE_FILE\" --env-file \"\$ENV_FILE\" logs --tail=200
-                exit 1
-              fi
-
-              # SAFE cleanup: only delete inside RELEASES_DIR, never anywhere else
-              echo \"==> Cleanup old releases (keep \$KEEP_RELEASES)\"
-              if [ -d \"\$RELEASES_DIR\" ]; then
-                cd \"\$RELEASES_DIR\"
-                ls -1dt */ 2>/dev/null | tail -n +\$((KEEP_RELEASES+1)) | xargs -r rm -rf --
-              fi
-
-              # Print current path (readlink might not exist)
-              CUR=\"\$APP_ROOT/current\"
-              if command -v readlink >/dev/null 2>&1; then
-                echo \"==> Done. Current -> \$(readlink -f \"\$CUR\")\"
-              elif command -v realpath >/dev/null 2>&1; then
-                echo \"==> Done. Current -> \$(realpath \"\$CUR\")\"
-              else
-                echo \"==> Done. Current -> \$CUR\"
-              fi
+              echo \"==> Done. Current -> \$(readlink -f '\$APP_ROOT/current')\"
             '"
