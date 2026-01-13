@@ -39,7 +39,7 @@ jobs:
           name: deploy-tgz
           path: .
 
-      - name: Setup SSH (robust + debug)
+      - name: Setup SSH (robust + debug)  # <-- FIXED for base64 secret
         shell: bash
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -56,7 +56,8 @@ jobs:
             exit 1
           fi
 
-          printf "%s" "$EC2_SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+          # IMPORTANT: EC2_SSH_PRIVATE_KEY secret is BASE64 now
+          echo "$EC2_SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
           ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
@@ -83,7 +84,7 @@ jobs:
           set -euo pipefail
           umask 077
 
-          # IMPORTANT: docker-compose uses ${SA_PASSWORD}, so write SA_PASSWORD (not MSSQL_SA_PASSWORD)
+          # docker-compose uses ${SA_PASSWORD}, so write SA_PASSWORD
           printf "SA_PASSWORD=%s\nSQL_DB=%s\nJWT_KEY=%s\n" \
             "$SA_PASSWORD" "$SQL_DB" "$JWT_KEY" > app.env
 
