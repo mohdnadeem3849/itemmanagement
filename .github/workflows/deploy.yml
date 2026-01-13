@@ -39,7 +39,7 @@ jobs:
           name: deploy-tgz
           path: .
 
-      - name: Setup SSH (base64 key + keepalive)
+      - name: Setup SSH (base64 key + resilient known_hosts)
         shell: bash
         env:
           EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
@@ -47,6 +47,7 @@ jobs:
           EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           set -euo pipefail
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
@@ -55,18 +56,37 @@ jobs:
             exit 1
           fi
 
+          # Decode base64 private key (strip spaces/newlines just in case)
           printf "%s" "$EC2_SSH_PRIVATE_KEY" | tr -d '\r\n ' | base64 -d > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
-          ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          : > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
+          echo "==> Trying ssh-keyscan (3 attempts)..."
+          for i in 1 2 3; do
+            ssh-keyscan -p 22 -T 10 -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null && break
+            sleep 2
+          done
+
+          echo "USER=$EC2_USER HOST=$EC2_HOST"
+          echo "known_hosts lines: $(wc -l < ~/.ssh/known_hosts || echo 0)"
+
+          # If keyscan didn't populate known_hosts, fall back to accept-new
+          if [ "$(wc -l < ~/.ssh/known_hosts)" -eq 0 ]; then
+            echo "WARNING: ssh-keyscan failed; using StrictHostKeyChecking=accept-new"
+            SSH_STRICT="-o StrictHostKeyChecking=accept-new"
+          else
+            SSH_STRICT="-o StrictHostKeyChecking=yes"
+          fi
+
+          echo "==> SSH test..."
           ssh -i ~/.ssh/id_rsa \
             -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=10 \
             -o TCPKeepAlive=yes \
+            $SSH_STRICT \
             "$EC2_USER@$EC2_HOST" "echo SSH_OK"
 
       - name: Create app.env (runner)
@@ -87,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           scp -i ~/.ssh/id_rsa \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=10 \
             -o TCPKeepAlive=yes \
@@ -100,7 +120,7 @@ jobs:
           set -euo pipefail
 
           ssh -i ~/.ssh/id_rsa \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=10 \
             -o TCPKeepAlive=yes \
